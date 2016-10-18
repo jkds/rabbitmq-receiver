@@ -28,34 +28,13 @@ import org.apache.spark.streaming.dstream.ReceiverInputDStream
 import org.apache.spark.streaming.receiver.Receiver
 
 private[receiver]
-class RabbitMQInputDStream(
-                            @transient ssc_ : StreamingContext,
-                            rabbitMQQueueName: Option[String],
-                            rabbitMQHost: String,
-                            rabbitMQPort: Int,
-                            exchangeName: Option[String],
-                            routingKeys: Seq[String],
-                            storageLevel: StorageLevel
-                            ) extends ReceiverInputDStream[String](ssc_) with Logging {
-
-  override def getReceiver(): Receiver[String] = {
-    val DefaultRabbitMQPort = 5672
-
-    new RabbitMQReceiver(rabbitMQQueueName,
-      Some(rabbitMQHost).getOrElse("localhost"),
-      Some(rabbitMQPort).getOrElse(DefaultRabbitMQPort),
-      exchangeName,
-      routingKeys,
-      storageLevel)
-  }
-}
-
-private[receiver]
-class RabbitMQReceiver(rabbitMQQueueName: Option[String],
-                       rabbitMQHost: String,
-                       rabbitMQPort: Int,
+class RabbitMQReceiver(queueName: String,
+                       host: String,
+                       port: Int,
+                       username : Option[String],
+                       password : Option[String],
                        exchangeName: Option[String],
-                       routingKeys: Seq[String],
+                       routingKeys: Option[Seq[String]],
                        storageLevel: StorageLevel)
   extends Receiver[String](storageLevel) with Logging {
 
@@ -77,25 +56,24 @@ class RabbitMQReceiver(rabbitMQQueueName: Option[String],
   /** Create a socket connection and receive data until receiver is stopped */
   private def receive(connection: Connection, channel: Channel) {
 
-    val queueName = !routingKeys.isEmpty match {
+    val qName = !routingKeys.isEmpty match {
       case true => {
         channel.exchangeDeclare(exchangeName.get, DirectExchangeType)
-        val queueName = channel.queueDeclare().getQueue()
-
-        for (routingKey: String <- routingKeys) {
-          channel.queueBind(queueName, exchangeName.get, routingKey)
+        val qName = channel.queueDeclare().getQueue()
+        routingKeys.map { keys =>
+          keys.foreach(channel.queueBind(qName, exchangeName.get, _))
         }
-        queueName
+        qName
       }
       case false => {
-        channel.queueDeclare(rabbitMQQueueName.get, false, false, false, new util.HashMap(0))
-        rabbitMQQueueName.get
+        channel.queueDeclare(queueName, true, false, false, new util.HashMap(0))
+        queueName
       }
     }
 
     log.info("RabbitMQ Input waiting for messages")
     val consumer: QueueingConsumer = new QueueingConsumer(channel)
-    channel.basicConsume(queueName, true, consumer)
+    channel.basicConsume(qName, true, consumer)
 
     while (!isStopped) {
       val delivery: QueueingConsumer.Delivery = consumer.nextDelivery
@@ -119,8 +97,10 @@ class RabbitMQReceiver(rabbitMQQueueName: Option[String],
 
   private def getConnectionFactory: ConnectionFactory = {
     val factory: ConnectionFactory = new ConnectionFactory
-    factory.setHost(rabbitMQHost)
-    factory.setPort(rabbitMQPort)
+    factory.setHost(host)
+    factory.setPort(port)
+    username.map(factory.setUsername(_))
+    password.map(factory.setPassword(_))
     factory
   }
 }
